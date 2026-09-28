@@ -27,7 +27,7 @@ uses
   {$IFDEF UNIX}
   cthreads,
   {$ENDIF}
-  SysUtils, Classes, GemClient, Identities;
+  SysUtils, Classes, StrUtils, GemClient, Identities;
 
 { One label column for the whole output, so that the values line up and a
   transcript reads as a table.  The longest label is identity, at eight. }
@@ -131,6 +131,92 @@ begin
   Result := Index <= ParamCount;
 end;
 
+{ Whether a character is safe to keep in a name this derives itself.  A server
+  picks the path, so the path ends up as part of a file name, and a slash or a
+  backslash or a colon would either escape the directory or be refused by the
+  system.  A dot is kept, because the extension is the point of a name like
+  about.gmi. }
+function IsNameChar(C: Char): Boolean;
+begin
+  Result := (C in ['a'..'z', 'A'..'Z', '0'..'9', '-', '_', '.', '~', '+', '%']);
+end;
+
+{ A name that keeps only the safe characters.  What is not safe becomes a dash
+  rather than going away, so that two different paths do not quietly become one
+  name.  Leading dots go, so that the result is never hidden and can never be
+  "." or "..". }
+function SanitizeName(const AText: string): string;
+var
+  I: Integer;
+  C: Char;
+begin
+  Result := '';
+  for I := 1 to Length(AText) do
+  begin
+    C := AText[I];
+    if IsNameChar(C) then
+      Result := Result + C
+    else
+      Result := Result + '-';
+  end;
+  while (Result <> '') and (Result[1] = '.') do
+    Delete(Result, 1, 1);
+end;
+
+{ A file name for a URL, taken from the last segment of its path.
+
+  Two URLs can want one name: gemini://host/logos/tidgemini.png and
+  gemini://host/icons/tidgemini.png both end in tidgemini.png, and the second
+  would replace the first.  So nothing here overwrites: a name that is already
+  taken is reported instead, and the caller can say where it should go with
+  --output.  When the path gives no usable name at all, the host is used, which
+  is the next most likely thing to tell two URLs apart. }
+function NameForURL(const AURL: string): string;
+var
+  Host: string;
+  Path: string;
+  I: Integer;
+  Q: Integer;
+begin
+  { Past the scheme, and past the query and the fragment: neither is part of a
+    file name, and a query can hold anything at all. }
+  Path := AURL;
+  I := Pos('://', Path);
+  if I > 0 then
+    Delete(Path, 1, I + 2);
+  Q := PosEx('?', Path, 1);
+  if Q > 0 then
+    Delete(Path, Q, Length(Path));
+  Q := PosEx('#', Path, 1);
+  if Q > 0 then
+    Delete(Path, Q, Length(Path));
+
+  I := PosEx('/', Path, 1);
+  if I > 0 then
+  begin
+    Host := Copy(Path, 1, I - 1);
+    Path := Copy(Path, I + 1, Length(Path));
+  end
+  else
+  begin
+    Host := Path;
+    Path := '';
+  end;
+
+  { The last segment, whole: a query is gone by now, so what is left is a
+    plain name with its extension.  LastDelimiter finds the last one, where
+    PosEx would find the first. }
+  I := LastDelimiter('/', Path);
+  if I > 0 then
+    Path := Copy(Path, I + 1, Length(Path));
+
+  Result := SanitizeName(Path);
+  if Result = '' then
+    Result := SanitizeName(Host);
+  if Result = '' then
+    Result := 'gemtext';
+end;
+
 procedure Usage;
 begin
   WriteLn('usage: dcs [options] <url> [input]');
@@ -141,6 +227,9 @@ begin
   WriteLn('                                 standard input when named "-"');
   WriteLn('  --output <file>                save the body to a file, as it');
   WriteLn('                                 arrived, instead of printing it');
+  WriteLn('  --save                         save the body to a file named');
+  WriteLn('                                 after the url, instead of printing');
+  WriteLn('                                 it; refuses to overwrite one');
   WriteLn('  --pin <sha256>                 require this server certificate');
   WriteLn('  --fingerprint                  print the server certificate');
   WriteLn('                                 fingerprint and stop');
@@ -349,6 +438,7 @@ var
   KeyFile: string;
   InputFile: string;
   OutputFile: string;
+  WantSave: Boolean;
   Options_: TGemOptions;
   Pins: TTrustedCerts;
   Pos_: Integer;
@@ -367,6 +457,7 @@ begin
   First := 1;
   WantFingerprint := False;
   WantIdents := False;
+  WantSave := False;
 
   { Options may appear in any order before the URL, and each one consumes only
     itself and its value: the URL and any input stay positional.  Input, being
@@ -411,6 +502,11 @@ begin
     begin
       OutputFile := ParamStr(Pos_ + 1);
       Inc(Pos_, 2);
+    end
+    else if SameText(ParamStr(Pos_), '--save') then
+    begin
+      WantSave := True;
+      Inc(Pos_);
     end
     else if SameText(ParamStr(Pos_), '--idents') then
     begin
@@ -474,6 +570,22 @@ begin
     Halt(0);
   end;
 
+  { --save names the file after the url, and is worked out before the request
+    so that a name already in use is reported without a round trip.  Overwriting
+    is not a decision to make on the caller's behalf, so it stops here rather
+    than resolving the clash by picking a winner. }
+  if WantSave and (OutputFile = '') then
+  begin
+    OutputFile := NameForURL(URL);
+    if FileExists(OutputFile) then
+    begin
+      WriteLn(LABEL_URL, URL);
+      WriteLn(LABEL_ERROR, 'would save to "', OutputFile,
+        '", which exists: name it with --output, or move it first');
+      Halt(1);
+    end;
+  end;
+
   Ok := GemRequest(URL, InputText, Options_, Status, Meta, Body, ErrMsg);
   if not Ok then
   begin
@@ -482,8 +594,14 @@ begin
   end;
 
   { A download gets the headers here and the body in the file, so that what is
-    saved is the response and not a report about it. }
-  if (OutputFile <> '') and (OutputFile <> '-') then
+    saved is the response and not a report about it.
+
+    A body that is not a success is not saved.  It is the server's complaint
+    rather than the document that was asked for, and leaving it in a file named
+    after the url would be worse than useless: the next attempt would find the
+    file there and refuse to write it.  So the complaint is printed instead, and
+    nothing is created to get in the way. }
+  if (OutputFile <> '') and (OutputFile <> '-') and (Status = 20) then
   begin
     ReportHead(URL, Status, Meta);
     if not TryWriteWholeFile(OutputFile, Body) then

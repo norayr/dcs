@@ -49,6 +49,7 @@ dcs [options] <url> [input]
 | `--cert <file> --key <file>` | log in with a certificate pair |
 | `--input <file>` | input from a file, or from standard input as `-` |
 | `--output <file>` | save the body to a file, as it arrived |
+| `--save` | save the body to a file named after the url |
 | `--pin <sha256>` | require this exact server certificate |
 | `--fingerprint` | print the server's SHA256 fingerprint and stop |
 | `--idents` | list the identities available |
@@ -81,6 +82,31 @@ status:   20  20 success
 meta:     "text/gemini"
 wrote:    index.gmi  1184 bytes
 ```
+
+`--save` picks the name from the url instead, so that a page you visit often
+does not need a name typed out:
+
+```sh
+$ dcs --save gemini://geminiprotocol.net/
+wrote:    geminiprotocol.net  1184 bytes
+```
+
+The name comes from the last segment of the path, keeping the extension, and the
+query is left out. A path that ends in a slash has no name in it, so the host is
+used instead. It will not overwrite: a name that is already taken is reported and
+nothing is fetched, because two paths can end in the same name and one would
+silently replace the other.
+
+```sh
+$ dcs --save gemini://geminiprotocol.net/
+error:    would save to "geminiprotocol.net", which exists: name it with
+          --output, or move it first
+```
+
+A response that is not a success is not written to a file at all. It is the
+server's complaint rather than the document that was asked for, and a file left
+behind under the url's name would stop the next attempt. The complaint is
+printed instead.
 
 Log in and download, for a page that is only served to you. The name after
 `--ident` is invented here; use one of your own from `--idents`:
