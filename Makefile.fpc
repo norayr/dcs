@@ -1,4 +1,4 @@
-# gem - a command line Gemini client
+# dcs - a command line Gemini client
 #
 #   make -f Makefile.fpc              build with TaurusTLS (TLS 1.3)
 #   make -f Makefile.fpc USE_TAURUS=0 build with Indy's OpenSSL (TLS 1.2 max)
@@ -15,10 +15,10 @@ INDY   := third_party/Indy/Lib
 TAURUS := third_party/TaurusTLS/Source
 
 BUILDDIR := build
-TARGET   := $(BUILDDIR)/gem
+TARGET   := $(BUILDDIR)/dcs
 UNITS    := $(BUILDDIR)/units
 
-GEM_UNITS := $(wildcard src/Units/*.pas)
+DCS_UNITS := $(wildcard src/Units/*.pas)
 
 PATHS := -Fu$(INDY)/Core -Fu$(INDY)/System -Fu$(INDY)/Protocols \
          -Fu$(INDY)/Security
@@ -33,7 +33,7 @@ endif
 
 all: $(TARGET)
 
-$(TARGET): src/gem.lpr $(GEM_UNITS)
+$(TARGET): src/dcs.lpr $(DCS_UNITS)
 	mkdir -p $(BUILDDIR) $(UNITS)
 	$(FPC) -Mdelphi -O2 -g -gl $(FPCOPT) \
 	  -FU$(UNITS) -FE$(BUILDDIR) -Fusrc/Units \

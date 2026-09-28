@@ -8,10 +8,14 @@ interface
   compile time.  With USE_TAURUS it speaks TLS 1.3 through TaurusTLS; without
   it, it falls back to Indy's own OpenSSL handler, which stops at TLS 1.2.
 
-  Certificates are not validated by default, because the servers under test use
+  Certificates are not validated by default, because many servers use
   self-signed ones.  Supply SHA256 fingerprints to pin instead, and pinning
   takes precedence over the chain result, which is what lets a self-signed
   certificate be trusted deliberately.
+
+  A client certificate can be supplied, which is how a Gemini identity works:
+  the server asks for one, usually with a 60 certificate required, and decides
+  who you are from the subject of the certificate you present.
 
   The two backends expose verification differently: Indy has OnVerifyPeer, a
   boolean-returning callback, while TaurusTLS has OnVerifyCallback, which sets a
@@ -20,20 +24,43 @@ interface
 type
   TTrustedCerts = array of string;
 
+{ Everything a request needs beyond the URL and the input.  All of it is
+  optional: with nothing set, certificates are not verified and no identity is
+  presented. }
+type
+  TGemOptions = class
+  private
+    FTrusted: TTrustedCerts;
+    FCertFile: string;
+    FKeyFile: string;
+  public
+    { SHA256 fingerprints to accept.  A matching certificate is allowed through
+      even if the chain result says otherwise. }
+    property Trusted: TTrustedCerts read FTrusted write FTrusted;
+    { Client certificate, the identity presented to servers that ask for one. }
+    property CertFile: string read FCertFile write FCertFile;
+    { Private key for CertFile. }
+    property KeyFile: string read FKeyFile write FKeyFile;
+    { True when an identity was supplied. }
+    function HasIdentity: Boolean;
+  end;
+
 { Performs one request.  Returns True when the exchange completed, whatever
   status the server chose.  Returns False on a transport or protocol error, in
   which case AError explains it and AStatus is -1.  AInput, when not empty, is
-  sent as gemtext input. }
-function GemRequest(const AURL: string; const AInput: string;
+  sent as gemtext input, which is how a query or a post is submitted: the server
+  answers 10 or 11, asks for the input, and then replies again. }
+function GemRequest(const AURL: string; const AInput: string; AOptions: TGemOptions;
   out AStatus: Integer; out AMeta: string; out ABody: string;
-  out AError: string; ATrusted: TTrustedCerts = nil): Boolean;
+  out AError: string): Boolean;
 
 { Human readable name for a Gemini status code. }
 function GemStatusName(AStatus: Integer): string;
 
 { SHA256 fingerprint of the certificate the server presents, for pinning.
   AError is empty on success. }
-function GemServerFingerprint(const AURL: string; out AError: string): string;
+function GemServerFingerprint(const AURL: string; AOptions: TGemOptions;
+  out AError: string): string;
 
 implementation
 
@@ -71,6 +98,11 @@ type
       Err: Integer): Boolean;
 {$ENDIF}
   end;
+
+function TGemOptions.HasIdentity: Boolean;
+begin
+  Result := (FCertFile <> '') and (FKeyFile <> '');
+end;
 
 function TCertificateWatch.Normalise(const AFingerprint: string): string;
 var
@@ -202,9 +234,13 @@ begin
   AStream.ReadBuffer(Result[1], AStream.Size);
 end;
 
-{ Attaches the TLS handler appropriate to the build.  When AWatch is not nil,
-  verification is switched on and routed through it. }
-procedure ConfigureTLS(AClient: TIdGemini; AWatch: TCertificateWatch);
+{ Attaches the TLS handler appropriate to the build.  AWatch, when given,
+  switches verification on and routes it through the watch, which is how
+  pinning and fingerprint capture work.  AOptions, when it carries an identity,
+  presents a client certificate so that servers demanding one can identify the
+  caller. }
+procedure ConfigureTLS(AClient: TIdGemini; AWatch: TCertificateWatch;
+  AOptions: TGemOptions);
 {$IFDEF USE_TAURUS}
 var
   Handler: TTaurusTLSIOHandlerSocket;
@@ -215,6 +251,13 @@ begin
     begin
       Handler.SSLOptions.VerifyMode := [sslvrfPeer];
       Handler.OnVerifyCallback := AWatch.Allow;
+    end;
+    if AOptions.HasIdentity then
+    begin
+      { ClientCert holds the certificate and key paths for a client, and is
+        applied to the context when the handler initialises. }
+      Handler.ClientCert.PublicKey := AOptions.CertFile;
+      Handler.ClientCert.PrivateKey := AOptions.KeyFile;
     end;
     Handler.MaxLineLength := 1024;
     AClient.IOHandler := Handler;
@@ -230,17 +273,23 @@ begin
     AClient.SSLIOHandler.SSLOptions.VerifyMode := [sslvrfPeer];
     AClient.SSLIOHandler.OnVerifyPeer := AWatch.Allow;
   end;
+  if AOptions.HasIdentity then
+  begin
+    AClient.SSLIOHandler.SSLOptions.CertFile := AOptions.CertFile;
+    AClient.SSLIOHandler.SSLOptions.KeyFile := AOptions.KeyFile;
+  end;
   AClient.SSLIOHandler.MaxLineLength := 1024;
 end;
 {$ENDIF}
 
 function GemRequest(const AURL: string; const AInput: string;
-  out AStatus: Integer; out AMeta: string; out ABody: string;
-  out AError: string; ATrusted: TTrustedCerts = nil): Boolean;
+  AOptions: TGemOptions; out AStatus: Integer; out AMeta: string;
+  out ABody: string; out AError: string): Boolean;
 var
   Client: TIdGemini;
   Response: TGeminiResponse;
   Watch: TCertificateWatch;
+  Pins: TTrustedCerts;
 begin
   Result := False;
   AStatus := -1;
@@ -248,9 +297,13 @@ begin
   ABody := '';
   AError := '';
 
-  { No pins means no verification, which is what these test servers need. }
-  if Length(ATrusted) > 0 then
-    Watch := TCertificateWatch.Create(ATrusted)
+  Pins := nil;
+  if AOptions <> nil then
+    Pins := AOptions.Trusted;
+
+  { No pins means no verification, which is what self-signed servers need. }
+  if Length(Pins) > 0 then
+    Watch := TCertificateWatch.Create(Pins)
   else
     Watch := nil;
 
@@ -259,7 +312,7 @@ begin
     Response := nil;
     try
       try
-        ConfigureTLS(Client, Watch);
+        ConfigureTLS(Client, Watch, AOptions);
 
         if AInput = '' then
           Response := Client.Request(AURL)
@@ -290,7 +343,8 @@ end;
 { Connects once purely to read the certificate.  Verification is enabled and
   then overridden, which is the only way to reach the certificate a self-signed
   server presents. }
-function GemServerFingerprint(const AURL: string; out AError: string): string;
+function GemServerFingerprint(const AURL: string; AOptions: TGemOptions;
+  out AError: string): string;
 var
   Client: TIdGemini;
   Response: TGeminiResponse;
@@ -306,7 +360,7 @@ begin
   Response := nil;
   try
     try
-      ConfigureTLS(Client, Watch);
+      ConfigureTLS(Client, Watch, AOptions);
       Response := Client.Request(AURL);
     except
       on E: Exception do
