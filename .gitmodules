@@ -1,0 +1,7 @@
+[submodule "third_party/Indy"]
+	path = third_party/Indy
+	url = git@github.com:norayr/Indy.git
+	branch = spartan
+[submodule "third_party/TaurusTLS"]
+	path = third_party/TaurusTLS
+	url = git@github.com:TaurusTLS-Developers/TaurusTLS.git
