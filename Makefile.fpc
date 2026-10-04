@@ -3,6 +3,7 @@
 #   make -f Makefile.fpc              build with TaurusTLS (TLS 1.3)
 #   make -f Makefile.fpc USE_TAURUS=0 build with Indy's OpenSSL (TLS 1.2 max)
 #   make -f Makefile.fpc check
+#   make -f Makefile.fpc test        end to end tests, needs agena built
 #   make -f Makefile.fpc clean
 #
 # Indy is a submodule here too, so the client and the server it talks to can be
@@ -29,7 +30,11 @@ FPCOPT := -dUSE_TAURUS
 PATHS += -Fu$(TAURUS)
 endif
 
-.PHONY: all clean check
+# The suite drives the built dcs against an agena built from the same Indy, so
+# both have to exist. Override AGENA_DIR if agena lives somewhere else.
+AGENA_DIR ?= ../agena
+
+.PHONY: all clean check test
 
 all: $(TARGET)
 
@@ -46,6 +51,12 @@ check:
 	   test -d third_party/TaurusTLS || { echo "missing submodule: TaurusTLS"; exit 1; }; \
 	 fi
 	@echo "all dependencies present"
+
+test: $(TARGET)
+	@test -x $(AGENA_DIR)/build/agena || { \
+	   echo "agena not found at $(AGENA_DIR)/build/agena"; \
+	   echo "build it with: make -C $(AGENA_DIR) -f Makefile.fpc"; exit 1; }
+	@DCS_BIN=$(CURDIR)/$(TARGET) AGENA_DIR=$(AGENA_DIR) python3 tests/run_tests.py
 
 clean:
 	rm -rf $(BUILDDIR)

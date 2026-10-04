@@ -15,7 +15,7 @@ Dvorak keyboard.
 ## Build
 
 ```sh
-git clone --recurse-submodules git@github.com:norayr/dcs.git
+git clone --recurse-submodules https://github.com/norayr/dcs.git
 cd dcs
 make -f Makefile.fpc
 ```
@@ -23,9 +23,14 @@ make -f Makefile.fpc
 The binary lands in `build/dcs`. There is no Lazarus project, because a plain
 FPC build is all that is needed.
 
+The Indy submodule pins
+[`7be08890`](https://github.com/norayr/Indy/commit/7be08890d8b1b2d51e6a6e64384cc908b12a93ed)
+from [norayr/Indy](https://github.com/norayr/Indy), the Gemini/Spartan revision
+submitted in [PR #697](https://github.com/IndySockets/Indy/pull/697).
+
 ### TLS backends
 
-The default is [TaurusTLS](https://github.com/TaurusTLS/TaurusTLS), vendored as a
+The default is [TaurusTLS](https://github.com/TaurusTLS-Developers/TaurusTLS), vendored as a
 submodule, which reaches TLS 1.3.
 
 ```sh
@@ -36,6 +41,23 @@ make -f Makefile.fpc USE_TAURUS=0 # Indy's OpenSSL, TLS 1.2 at best
 Both build. Only the TaurusTLS one is exercised here: the fallback compiles,
 but at run time it needs the OpenSSL shared libraries from a built Indy package
 on the library path, otherwise it reports `Could not load SSL library`.
+
+## Tests
+
+Clone [agena](https://github.com/norayr/agena) next to this checkout and build
+both projects, then run:
+
+```sh
+make -C ../agena -f Makefile.fpc
+make -f Makefile.fpc test
+```
+
+For another server location, pass `AGENA_DIR=/path/to/agena` to make.
+The suite creates temporary certificates and a document root and tests raw
+protocol framing, client behavior, input handshakes, file output, pinning,
+identities and TLS negotiation. The reviewed revision produced 53 passes,
+no unexpected failures, and two known failures involving agena's CGI handling
+and TLS minimum-version setting. See [tests/README.md](tests/README.md).
 
 ## Usage
 

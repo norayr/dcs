@@ -267,18 +267,30 @@ begin
   end;
 end;
 {$ELSE}
+var
+  { TIdGemini deliberately leaves IOHandler empty, so that Indy's OpenSSL
+    handler is not linked into every build that speaks TLS some other way.
+    Create the handler here rather than assuming one is already there. }
+  Handler: TIdSSLIOHandlerSocketOpenSSL;
 begin
-  if AWatch <> nil then
-  begin
-    AClient.SSLIOHandler.SSLOptions.VerifyMode := [sslvrfPeer];
-    AClient.SSLIOHandler.OnVerifyPeer := AWatch.Allow;
+  Handler := TIdSSLIOHandlerSocketOpenSSL.Create(AClient);
+  try
+    if AWatch <> nil then
+    begin
+      Handler.SSLOptions.VerifyMode := [sslvrfPeer];
+      Handler.OnVerifyPeer := AWatch.Allow;
+    end;
+    if AOptions.HasIdentity then
+    begin
+      Handler.SSLOptions.CertFile := AOptions.CertFile;
+      Handler.SSLOptions.KeyFile := AOptions.KeyFile;
+    end;
+    Handler.MaxLineLength := 1024;
+    AClient.IOHandler := Handler;
+  except
+    Handler.Free;
+    raise;
   end;
-  if AOptions.HasIdentity then
-  begin
-    AClient.SSLIOHandler.SSLOptions.CertFile := AOptions.CertFile;
-    AClient.SSLIOHandler.SSLOptions.KeyFile := AOptions.KeyFile;
-  end;
-  AClient.SSLIOHandler.MaxLineLength := 1024;
 end;
 {$ENDIF}
 
@@ -287,7 +299,7 @@ function GemRequest(const AURL: string; const AInput: string;
   out ABody: string; out AError: string): Boolean;
 var
   Client: TIdGemini;
-  Response: TGeminiResponse;
+  LOk: Boolean;
   Watch: TCertificateWatch;
   Pins: TTrustedCerts;
 begin
@@ -309,30 +321,34 @@ begin
 
   try
     Client := TIdGemini.Create(nil);
-    Response := nil;
     try
       try
         ConfigureTLS(Client, Watch, AOptions);
 
+        { The response belongs to Client, so it is read back through
+          Client.Response instead of being held, and freed, here. }
         if AInput = '' then
-          Response := Client.Request(AURL)
+          LOk := Client.Request(AURL)
         else
-          Response := Client.Request(AURL, AInput);
+          LOk := Client.Request(AURL, AInput);
+        if not LOk then
+        begin
+          AError := 'no response';
+          Exit;
+        end;
       except
         on E: Exception do
         begin
           AError := E.ClassName + ': ' + E.Message;
-          Response := nil;
           Exit;
         end;
       end;
 
-      AStatus := Response.StatusCode;
-      AMeta := Response.Meta;
-      ABody := StreamToText(Response.Content);
+      AStatus := Client.Response.StatusCode;
+      AMeta := Client.Response.Meta;
+      ABody := StreamToText(Client.Response.Content);
       Result := True;
     finally
-      Response.Free;
       Client.Free;
     end;
   finally
@@ -347,7 +363,6 @@ function GemServerFingerprint(const AURL: string; AOptions: TGemOptions;
   out AError: string): string;
 var
   Client: TIdGemini;
-  Response: TGeminiResponse;
   Watch: TCertificateWatch;
 begin
   Result := '';
@@ -357,11 +372,10 @@ begin
     check and simply records the certificate. }
   Watch := TCertificateWatch.Create(nil, True);
   Client := TIdGemini.Create(nil);
-  Response := nil;
   try
     try
       ConfigureTLS(Client, Watch, AOptions);
-      Response := Client.Request(AURL);
+      Client.Request(AURL);
     except
       on E: Exception do
       begin
@@ -371,7 +385,6 @@ begin
     end;
     Result := Watch.Captured;
   finally
-    Response.Free;
     Client.Free;
     Watch.Free;
   end;
